@@ -81,6 +81,37 @@ test('объединение источников: расхождения пом
   assert.equal(m.review.title, undefined);
 });
 
+test('пример из задания на реальных ответах модели: ложный пункт и ложный конфликт не проходят', () => {
+  // Ответы qwen2.5vl:7b по двум скриншотам ЗЦП (скриншот 1 — карточка, 2 — требования).
+  const shot1 = normalizeExtraction({
+    ...base, company: 'ООО «Компания Б»', title: 'Поставка преобразователей напряжения 24 В → 12 В', type: 'ЗЦП', number: 'Лот № 77',
+    deadline_raw: '20.12.2026 до 1', deadline_date: '2026-12-20', requirements_visible: true,
+    checklist: [{ title: 'Приложить ценовое предложение', required: 'yes', excerpt: 'Запрос ценовых предложений', source: 'screenshot', ordinal: 1 }],
+  });
+  const shot2 = normalizeExtraction({
+    ...base, company_review: 'Название заказчика не видно.', title: 'Требования к заявке', type: 'ЗЦП', requirements_visible: true,
+    checklist: [
+      { title: 'Приложить ценовое предложение', required: 'yes', excerpt: 'К заявке необходимо приложить ценовое предложение и паспорт оборудования.', source: 'screenshot', ordinal: 2 },
+      { title: 'Приложить паспорт оборудования', required: 'yes', excerpt: 'К заявке необходимо приложить ценовое предложение и паспорт оборудования.', source: 'screenshot', ordinal: 2 },
+    ],
+  });
+  const m = mergeExtractions([shot1, shot2]);
+  assert.equal(m.fields.title, 'Поставка преобразователей напряжения 24 В → 12 В');
+  assert.equal(m.review.title, undefined, 'заголовок раздела на странице требований не даёт ложного конфликта');
+  assert.ok(m.review.deadline, 'обрезанный срок по-прежнему помечен');
+  assert.equal(m.items.length, 2);
+  assert.ok(m.items.every((i) => i.required === 'yes' && i.ordinal === 2), 'пункты взяты со скриншота 2, где есть настоящая цитата');
+
+  // Только страница требований, без реквизитов: поля заполнены «на всякий случай» и помечены.
+  const only = mergeExtractions([shot2]);
+  assert.equal(only.fields.title, 'Требования к заявке');
+  assert.match(only.review.title, /без реквизитов/);
+
+  // Пункт, цитата которого не выражает требование, остаётся только как «на проверке».
+  const lone = mergeExtractions([shot1]);
+  assert.equal(lone.items[0].required, 'unclear');
+});
+
 test('Ollama: понятные ошибки и состояние', async () => {
   const down = createOllamaRecognizer({ baseUrl: 'http://x', model: 'm', fetchImpl: async () => { throw new TypeError('fetch failed'); } });
   await assert.rejects(() => down({ page: { text: 'abc' }, images: [], today: '' }), /Ollama/);

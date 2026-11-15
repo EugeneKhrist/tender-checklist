@@ -81,7 +81,9 @@ export const SYSTEM_PROMPT = `Ты помощник менеджера по по
   title — коротко («Приложить ценовое предложение»);
   required — "yes", если написано «необходимо / должен / требуется / обязательно»; "no", если «по желанию / при наличии / рекомендуется»; "unclear", если из текста не ясно;
   excerpt — короткая дословная цитата из материала (до 200 символов).
-- requirements_visible: true, если в материале есть требования к заявке; false, если видна только карточка или общие сведения.`;
+- requirements_visible: true, если в материале есть требования к заявке; false, если видна только карточка или общие сведения.
+- Заголовки страниц, название закупки и вид закупки («Запрос ценовых предложений») сами не являются требованиями: пункт чек-листа создавай только из предложения, где прямо сказано, что нужно приложить или сделать. Нет такого текста — checklist пустой.
+- Если на странице нет реквизитов закупки (только перечень требований), поля company, title, number оставь пустыми: заголовок раздела («Требования к заявке») не является названием закупки.`;
 
 /* ---------- нормализация ответа ---------- */
 
@@ -193,25 +195,40 @@ export function normalizeExtraction(raw) {
 
 const sameText = (a, b) => normalizeTitle(a) === normalizeTitle(b);
 
+// Слова, по которым в тексте узнаётся требование к заявке.
+const REQUIREMENT_MARK =
+  /необходим|обязательн|долж(ен|ны|на)|требу(ет|ют)ся|следует|нужно|приложи|прилага|предостав|представ|подтверд|по желанию|при наличии|рекоменду|допускается/i;
+
 /** Склеивает нормализованные результаты (по одному на скриншот или фрагмент текста). */
 export function mergeExtractions(parts) {
   if (!parts.length) throw new Error('nothing to merge');
   const fields = {};
   const review = {};
 
+  // Источник с реквизитами закупки (карточка) надёжнее страницы «с требованиями»: на ней модель
+  // нередко принимает заголовок раздела за название закупки. Расхождения ищем только между карточками.
+  const cardLike = (p) => ['company', 'title', 'number', 'deadline_date'].filter((k) => p.fields[k]).length >= 2;
+  const cards = parts.filter(cardLike);
+  const WEAK = 'Значение взято со страницы без реквизитов закупки — проверьте';
+
   for (const key of ['company', 'title', 'type', 'number']) {
-    const have = parts.filter((p) => p.fields[key] !== null);
-    if (!have.length) {
-      fields[key] = null;
-      if (parts[0].review[key]) review[key] = parts[0].review[key];
+    const have = cards.filter((p) => p.fields[key] !== null);
+    if (have.length) {
+      fields[key] = have[0].fields[key];
+      if (have[0].review[key]) review[key] = have[0].review[key];
+      const other = have.find((p) => !sameText(p.fields[key], fields[key]));
+      if (other) review[key] = `В источниках разные значения: «${fields[key]}» и «${other.fields[key]}»`;
       continue;
     }
-    fields[key] = have[0].fields[key];
-    if (have[0].review[key]) review[key] = have[0].review[key];
-    const other = have.find((p) => !sameText(p.fields[key], fields[key]));
-    if (other) {
-      review[key] = `В источниках разные значения: «${fields[key]}» и «${other.fields[key]}»`;
+    const weak = parts.find((p) => p.fields[key] !== null);
+    if (weak) {
+      fields[key] = weak.fields[key];
+      review[key] = weak.review[key] || WEAK;
+      continue;
     }
+    fields[key] = null;
+    const reason = (cards[0] || parts[0]).review[key];
+    if (reason) review[key] = reason;
   }
 
   // Срок берём из самого полного источника (дата + время).
@@ -231,16 +248,21 @@ export function mergeExtractions(parts) {
   fields.url = withUrl?.fields.url ?? null;
   if (withUrl?.review.url) review.url = withUrl.review.url;
 
-  const items = [];
-  const seen = new Set();
+  // Пункт — это требование, поэтому его цитата должна его выражать («необходимо приложить…»).
+  // Одинаковые пункты из разных источников: остаётся тот, у которого цитата убедительнее.
+  // Пункт без такой цитаты (например, выведенный из заголовка страницы) получает «Требует проверки».
+  const byTitle = new Map();
   for (const p of parts) {
     for (const it of p.items) {
       const key = normalizeTitle(it.title);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      items.push(it);
+      const mark = REQUIREMENT_MARK.test(it.excerpt || '') ? 1 : 0;
+      const prev = byTitle.get(key);
+      if (!prev || mark > prev.mark) byTitle.set(key, { it, mark, order: prev?.order ?? byTitle.size });
     }
   }
+  const items = [...byTitle.values()]
+    .sort((a, b) => a.order - b.order)
+    .map(({ it, mark }) => (mark ? it : { ...it, required: 'unclear' }));
 
   return { fields, review, items, requirementsVisible: parts.some((p) => p.requirementsVisible) || items.length > 0 };
 }
