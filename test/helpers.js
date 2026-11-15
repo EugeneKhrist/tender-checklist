@@ -97,6 +97,9 @@ export async function startFakeSite() {
     if (req.url === '/ok') {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(encode1251(requirementsPage));
+    } else if (req.url === '/pdf') {
+      res.writeHead(200, { 'content-type': 'application/pdf' });
+      res.end(fs.readFileSync(new URL('./fixtures/tender.pdf', import.meta.url)));
     } else if (req.url === '/forbidden') {
       res.writeHead(403).end('forbidden');
     } else if (req.url === '/wall') {

@@ -75,6 +75,7 @@ export function serializeItem(row) {
     source_type: row.source_type,
     source_file_id: row.source_file_id,
     source_ordinal: row.source_ordinal ?? null,
+    source_name: row.source_name ?? null,
     excerpt: row.excerpt,
     status: row.status,
     assignee: row.assignee,
@@ -84,12 +85,14 @@ export function serializeItem(row) {
 
 export function serializeTender(db, row) {
   const files = db
-    .prepare('SELECT id, ordinal, filename, mime FROM tender_files WHERE tender_id = ? ORDER BY ordinal')
+    .prepare(
+      'SELECT id, ordinal, filename, mime, kind, size FROM tender_files WHERE tender_id = ? ORDER BY kind DESC, ordinal',
+    )
     .all(row.id)
     .map((f) => ({ ...f }));
   const items = db
     .prepare(
-      `SELECT i.*, f.ordinal AS source_ordinal
+      `SELECT i.*, f.ordinal AS source_ordinal, f.filename AS source_name
        FROM checklist_items i LEFT JOIN tender_files f ON f.id = i.source_file_id
        WHERE i.tender_id = ? ORDER BY i.position, i.id`,
     )
@@ -98,6 +101,9 @@ export function serializeTender(db, row) {
   const progress = progressFrom(db.prepare(`${PROGRESS_SQL} WHERE tender_id = ?`).get(row.id));
   return { ...baseFields(row), files, items, progress };
 }
+
+export const ITEM_SQL = `SELECT i.*, f.ordinal AS source_ordinal, f.filename AS source_name
+  FROM checklist_items i LEFT JOIN tender_files f ON f.id = i.source_file_id WHERE i.id = ?`;
 
 export function touchTender(db, id) {
   db.prepare("UPDATE tenders SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(id);

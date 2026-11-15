@@ -50,7 +50,7 @@ test('Ollama: по запросу на каждый скриншот, источ
   assert.equal(ex.fields.company, 'ООО «Компания Б»');
   assert.ok(ex.review.deadline);
   assert.equal(ex.items.length, 2);
-  assert.ok(ex.items.every((i) => i.source === 'screenshot' && i.screenshot_number === 2));
+  assert.ok(ex.items.every((i) => i.source === 'screenshot' && i.ordinal === 2));
   assert.equal(ex.requirementsVisible, true);
 });
 
@@ -99,7 +99,4 @@ test('Ollama: понятные ошибки и состояние', async () => 
   const junk = createOllamaRecognizer({ baseUrl: 'http://x', model: 'm', fetchImpl: async () => { calls += 1; return { ok: true, status: 200, json: async () => ({ message: { content: 'не JSON' } }) }; } });
   await assert.rejects(() => junk({ page: null, images: [{ ordinal: 1, mime: 'image/png', buffer: PNG }], today: '' }), RecognitionError);
   assert.equal(calls, 2, 'одна повторная попытка');
-
-  const pdf = createOllamaRecognizer({ baseUrl: 'http://x', model: 'm', fetchImpl: async () => answer(base) });
-  await assert.rejects(() => pdf({ page: { pdf: Buffer.from('%PDF') }, images: [], today: '' }), /PDF/);
 });

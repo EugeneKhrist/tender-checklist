@@ -16,7 +16,9 @@ const isEmpty = (v) => v === null || v === undefined || String(v).trim() === '';
  */
 export async function runRecognition({ db, config, recognizer, tenderId, readPage = readTenderPage }) {
   const tender = db.prepare('SELECT * FROM tenders WHERE id = ?').get(tenderId);
-  const files = db.prepare('SELECT * FROM tender_files WHERE tender_id = ? ORDER BY ordinal').all(tenderId);
+  const files = db.prepare('SELECT * FROM tender_files WHERE tender_id = ? ORDER BY kind DESC, ordinal').all(tenderId);
+  const imageFiles = files.filter((f) => f.kind === 'image');
+  const docFiles = files.filter((f) => f.kind === 'document');
   const notices = [];
 
   let page = null;
@@ -36,17 +38,18 @@ export async function runRecognition({ db, config, recognizer, tenderId, readPag
     notices.push({
       level: 'error',
       text: tender.url
-        ? 'Не удалось прочитать страницу по ссылке. Ссылка сохранена — загрузите скриншоты, и распознавание продолжится по ним.'
-        : 'Добавьте ссылку на закупку или скриншоты.',
+        ? 'Не удалось прочитать страницу по ссылке. Ссылка сохранена — загрузите скриншоты или документы, и распознавание продолжится по ним.'
+        : 'Добавьте ссылку на закупку, скриншоты или документы.',
     });
     return { recognized: false, notices };
   }
 
-  const images = files.map((f) => ({
+  const images = imageFiles.map((f) => ({
     ordinal: f.ordinal,
     mime: f.mime,
     buffer: fs.readFileSync(path.join(config.uploadsDir, f.stored_name)),
   }));
+  const documents = docFiles.map((f) => ({ ordinal: f.ordinal, name: f.filename, text: f.extracted_text }));
 
   let extraction;
   try {
@@ -54,6 +57,7 @@ export async function runRecognition({ db, config, recognizer, tenderId, readPag
       url: tender.url || null,
       page: usablePage,
       images,
+      documents,
       today: new Date().toISOString().slice(0, 10),
     });
   } catch (err) {
@@ -70,7 +74,7 @@ export async function runRecognition({ db, config, recognizer, tenderId, readPag
   if (!extraction.requirementsVisible) {
     notices.push({
       level: 'warn',
-      text: 'В материалах не найдено требований к заявке — видна только карточка закупки. Добавьте страницы с требованиями (скриншоты или ссылку).',
+      text: 'В материалах не найдено требований к заявке — видна только карточка закупки. Добавьте страницы или документы с требованиями (скриншоты, PDF, Word, Excel или ссылку).',
     });
   } else if (added === 0 && extraction.items.length === 0) {
     notices.push({ level: 'info', text: 'Новых пунктов чек-листа не найдено.' });
@@ -79,7 +83,11 @@ export async function runRecognition({ db, config, recognizer, tenderId, readPag
 }
 
 export function applyExtraction(db, tender, files, ex, hasPage) {
-  const byOrdinal = new Map(files.map((f) => [f.ordinal, f]));
+  // Номера скриншотов и документов считаются отдельно.
+  const byKind = {
+    screenshot: new Map(files.filter((f) => f.kind === 'image').map((f) => [f.ordinal, f])),
+    document: new Map(files.filter((f) => f.kind === 'document').map((f) => [f.ordinal, f])),
+  };
   return transaction(db, () => {
     const flags = parseFlags(tender.review_flags);
     const set = {};
@@ -130,9 +138,9 @@ export function applyExtraction(db, tender, files, ex, hasPage) {
       known.add(key);
       let sourceType = 'link';
       let fileId = null;
-      if (it.source === 'screenshot') {
-        const f = byOrdinal.get(it.screenshot_number);
-        sourceType = 'screenshot';
+      if (it.source === 'screenshot' || it.source === 'document') {
+        const f = byKind[it.source].get(it.ordinal);
+        sourceType = it.source;
         fileId = f ? f.id : null;
         if (!f && hasPage) sourceType = 'link';
       }

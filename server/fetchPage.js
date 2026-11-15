@@ -4,6 +4,7 @@ import dns from 'node:dns';
 import net from 'node:net';
 import zlib from 'node:zlib';
 import * as cheerio from 'cheerio';
+import { extractDocumentText } from './documents.js';
 
 const MAX_BYTES = 6 * 1024 * 1024;
 const MAX_TEXT_CHARS = 60_000;
@@ -168,8 +169,10 @@ export function extractText(html) {
       $(el).append('\n');
     },
   );
+  // Ячейка таблицы — одна строка текста через « | » (в ячейках Word внутри бывают абзацы).
   $('td,th').each((_, el) => {
-    $(el).append(' | ');
+    const cell = $(el).text().replace(/\s+/g, ' ').trim();
+    $(el).text(`${cell} | `);
   });
   let text = $('body').length ? $('body').text() : $.root().text();
   text = text
@@ -227,10 +230,21 @@ export async function readTenderPage(url, { allowPrivate = false } = {}) {
 
   const contentType = String(headers['content-type'] || '').toLowerCase();
   if (contentType.includes('application/pdf')) {
-    if (res.truncated || res.body.length > 20 * 1024 * 1024) {
-      return { status: 'unreachable', message: 'PDF-файл по ссылке слишком большой.', text: '', title: '', finalUrl };
+    if (res.truncated) {
+      return {
+        status: 'unreachable',
+        message: 'PDF-файл по ссылке слишком большой (больше 6 МБ). Скачайте его и загрузите как документ.',
+        text: '',
+        title: '',
+        finalUrl,
+      };
     }
-    return { status: 'ok', message: '', text: '', title: '', finalUrl, pdf: res.body };
+    try {
+      const text = await extractDocumentText('pdf', res.body, 'PDF по ссылке');
+      return { status: 'ok', message: '', text, title: 'PDF-документ', finalUrl };
+    } catch (err) {
+      return { status: 'empty', message: err.message, text: '', title: '', finalUrl };
+    }
   }
   if (contentType && !/(text\/|xml|json)/.test(contentType)) {
     return {

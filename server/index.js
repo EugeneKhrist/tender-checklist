@@ -11,6 +11,7 @@ async function main() {
     baseUrl: config.ollamaUrl,
     model: config.ollamaModel,
     numCtx: config.ollamaNumCtx,
+    maxChunks: config.ollamaMaxChunks,
   });
 
   const app = createApp({ db, config, recognizer });

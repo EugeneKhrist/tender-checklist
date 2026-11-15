@@ -5,13 +5,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.js';
 import { transaction } from './db.js';
-import { REVIEW_KEYS, findTender, listTenders, serializeItem, serializeTender, touchTender } from './store.js';
+import { ITEM_SQL, REVIEW_KEYS, findTender, listTenders, serializeItem, serializeTender, touchTender } from './store.js';
+import { MAX_DOC_BYTES, detectDocument, extractDocumentText } from './documents.js';
 import { runRecognition } from './recognize.js';
 import { readTenderPage } from './fetchPage.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_FILES_PER_REQUEST = 10;
-const MAX_FILES_PER_TENDER = 20;
+const MAX_FILES_PER_TENDER = 20; // скриншотов
+const MAX_DOCS_PER_TENDER = 10; // документов
 
 const httpError = (status, message) => Object.assign(new Error(message), { status, expose: true });
 
@@ -53,7 +55,7 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
 
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_IMAGE_BYTES, files: MAX_FILES_PER_REQUEST },
+    limits: { fileSize: MAX_DOC_BYTES, files: MAX_FILES_PER_REQUEST },
   });
 
   /* ----- защита без входа: приложение отвечает только на «свои» адреса ----- */
@@ -117,30 +119,78 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
 
   api.get('/tenders/:id', (req, res) => res.json(serializeTender(db, getTender(req))));
 
-  function validateImages(files, alreadyHave = 0) {
-    if (alreadyHave + files.length > MAX_FILES_PER_TENDER) {
+  // busboy отдаёт имя файла в latin1: если все символы ≤ 0xFF, это «испорченный» UTF-8.
+  const fileName = (file) => {
+    const raw = file.originalname || '';
+    return [...raw].every((ch) => ch.charCodeAt(0) <= 0xff) ? Buffer.from(raw, 'latin1').toString('utf8') : raw;
+  };
+
+  /**
+   * Проверяет загруженные файлы: изображения (по содержимому) и документы PDF / Word / Excel.
+   * Из документов сразу извлекается текст; если файл нельзя прочитать — понятная ошибка, ничего не сохраняется.
+   */
+  async function validateFiles(files, have = { image: 0, document: 0 }) {
+    const checked = [];
+    let images = 0;
+    let docs = 0;
+    for (const file of files) {
+      const name = str(fileName(file), 200);
+      const img = sniffImage(file.buffer);
+      if (img) {
+        if (file.size > MAX_IMAGE_BYTES) {
+          throw httpError(400, `Изображение «${name}» слишком большое (максимум ${MAX_IMAGE_BYTES / 1024 / 1024} МБ)`);
+        }
+        images += 1;
+        checked.push({ file, name, kind: 'image', text: '', ...img });
+        continue;
+      }
+      const doc = detectDocument(name, file.buffer);
+      if (!doc) {
+        throw httpError(
+          400,
+          `Файл «${name}» не подходит. Загрузите изображение (JPG, PNG, WEBP, GIF) или документ: PDF, Word (.docx, .doc), Excel (.xlsx).`,
+        );
+      }
+      let text;
+      try {
+        text = await extractDocumentText(doc.kind, file.buffer, name);
+      } catch (err) {
+        throw httpError(400, err.message);
+      }
+      docs += 1;
+      checked.push({ file, name, kind: 'document', text, mime: doc.mime, ext: doc.ext });
+    }
+    if (have.image + images > MAX_FILES_PER_TENDER) {
       throw httpError(400, `К одной закупке можно добавить не больше ${MAX_FILES_PER_TENDER} скриншотов`);
     }
-    return files.map((f) => {
-      const kind = sniffImage(f.buffer);
-      if (!kind) throw httpError(400, `Файл «${f.originalname}» не похож на изображение (нужен JPG, PNG, WEBP или GIF)`);
-      return { file: f, ...kind };
-    });
+    if (have.document + docs > MAX_DOCS_PER_TENDER) {
+      throw httpError(400, `К одной закупке можно добавить не больше ${MAX_DOCS_PER_TENDER} документов`);
+    }
+    return checked;
   }
 
-  function storeImages(tenderId, checked) {
+  const countFiles = (tenderId) => {
+    const rows = db.prepare('SELECT kind, COUNT(*) AS c FROM tender_files WHERE tender_id = ? GROUP BY kind').all(tenderId);
+    const out = { image: 0, document: 0 };
+    for (const r of rows) out[r.kind] = Number(r.c);
+    return out;
+  };
+
+  function storeFiles(tenderId, checked) {
     const insert = db.prepare(
-      'INSERT INTO tender_files (tender_id, ordinal, filename, mime, size, stored_name) VALUES (?, ?, ?, ?, ?, ?)',
+      `INSERT INTO tender_files (tender_id, ordinal, filename, mime, size, stored_name, kind, extracted_text)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    let ordinal = db.prepare('SELECT COALESCE(MAX(ordinal), 0) AS m FROM tender_files WHERE tender_id = ?').get(tenderId).m;
-    for (const { file, mime, ext } of checked) {
-      const stored = `${crypto.randomUUID()}${ext}`;
-      fs.writeFileSync(path.join(config.uploadsDir, stored), file.buffer);
-      ordinal += 1;
-      // busboy отдаёт имя файла в latin1: если все символы ≤ 0xFF, это «испорченный» UTF-8.
-      const raw = file.originalname || '';
-      const name = [...raw].every((ch) => ch.charCodeAt(0) <= 0xff) ? Buffer.from(raw, 'latin1').toString('utf8') : raw;
-      insert.run(tenderId, ordinal, str(name, 200) || `Скриншот ${ordinal}`, mime, file.size, stored);
+    const next = { image: 0, document: 0 };
+    for (const kind of Object.keys(next)) {
+      next[kind] = db.prepare('SELECT COALESCE(MAX(ordinal), 0) AS m FROM tender_files WHERE tender_id = ? AND kind = ?').get(tenderId, kind).m;
+    }
+    for (const c of checked) {
+      const stored = `${crypto.randomUUID()}${c.ext}`;
+      fs.writeFileSync(path.join(config.uploadsDir, stored), c.file.buffer);
+      next[c.kind] += 1;
+      const fallback = c.kind === 'image' ? `Скриншот ${next[c.kind]}` : `Документ ${next[c.kind]}`;
+      insert.run(tenderId, next[c.kind], c.name || fallback, c.mime, c.file.size, stored, c.kind, c.text);
     }
   }
 
@@ -152,15 +202,15 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
     const url = normalizeUrl(req.body?.url);
     const manual = req.body?.mode === 'manual';
     if (url === null) throw httpError(400, 'Ссылка введена неверно. Пример: https://example.com/tender/123');
-    if (!manual && !url && files.length === 0) throw httpError(400, 'Добавьте ссылку на закупку или хотя бы один скриншот');
-    const checked = validateImages(files);
+    if (!manual && !url && files.length === 0) throw httpError(400, 'Добавьте ссылку на закупку, скриншоты или документы');
+    const checked = await validateFiles(files);
 
     const tenderId = transaction(db, () => {
       const r = db
         .prepare('INSERT INTO tenders (url, url_status) VALUES (?, ?)')
         .run(url, url ? 'not_checked' : 'none');
       const id = Number(r.lastInsertRowid);
-      storeImages(id, checked);
+      storeFiles(id, checked);
       return id;
     });
     const result = manual
@@ -179,8 +229,7 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
       if (n === null) throw httpError(400, 'Ссылка введена неверно. Пример: https://example.com/tender/123');
       url = n;
     }
-    const have = db.prepare('SELECT COUNT(*) AS c FROM tender_files WHERE tender_id = ?').get(row.id).c;
-    const checked = validateImages(files, Number(have));
+    const checked = await validateFiles(files, countFiles(row.id));
     transaction(db, () => {
       if (url !== row.url) {
         db.prepare("UPDATE tenders SET url = ?, url_status = 'not_checked', url_note = '' WHERE id = ?").run(url, row.id);
@@ -188,7 +237,7 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
         delete flags.url;
         db.prepare('UPDATE tenders SET review_flags = ? WHERE id = ?').run(JSON.stringify(flags), row.id);
       }
-      storeImages(row.id, checked);
+      storeFiles(row.id, checked);
     });
     const result = await runRecognition({ db, config, recognizer: recognizerFn, tenderId: row.id, readPage });
     touchTender(db, row.id);
@@ -254,9 +303,6 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
   });
 
   /* ----- пункты чек-листа ----- */
-  const ITEM_SQL = `SELECT i.*, f.ordinal AS source_ordinal
-                    FROM checklist_items i LEFT JOIN tender_files f ON f.id = i.source_file_id WHERE i.id = ?`;
-
   api.post('/tenders/:id/items', (req, res) => {
     const row = getTender(req);
     const title = str(req.body?.title, 300);
@@ -320,7 +366,9 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
     const f = db.prepare('SELECT * FROM tender_files WHERE id = ?').get(Number(req.params.id));
     if (!f) throw httpError(404, 'Файл не найден');
     res.set('Cache-Control', 'private, max-age=86400');
-    res.type(f.mime).sendFile(path.join(config.uploadsDir, f.stored_name));
+    const abs = path.join(config.uploadsDir, f.stored_name);
+    if (f.kind === 'document') return res.download(abs, f.filename); // документы скачиваются, а не открываются
+    res.type(f.mime).sendFile(abs);
   });
 
   api.use((_req, res) => res.status(404).json({ error: 'Не найдено' }));
@@ -334,7 +382,7 @@ export function createApp({ db, config, recognizer, readPage = readTenderPage })
     if (err instanceof multer.MulterError) {
       const text =
         err.code === 'LIMIT_FILE_SIZE'
-          ? `Файл слишком большой (максимум ${MAX_IMAGE_BYTES / 1024 / 1024} МБ)`
+          ? `Файл слишком большой (максимум ${MAX_DOC_BYTES / 1024 / 1024} МБ)`
           : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE'
             ? `За один раз можно загрузить не больше ${MAX_FILES_PER_REQUEST} файлов`
             : 'Не удалось принять файлы';

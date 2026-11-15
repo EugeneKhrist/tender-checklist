@@ -8,7 +8,7 @@ import {
 } from './extract.js';
 
 const CHUNK_CHARS = 6000;
-const MAX_CHUNKS = 8;
+const MAX_CHUNKS = 10;
 const REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 /** Делит текст страницы на фрагменты по строкам: маленькой локальной модели проще работать с короткими кусками. */
@@ -28,10 +28,10 @@ export function splitText(text, size = CHUNK_CHARS, max = MAX_CHUNKS) {
 
 /**
  * Распознавание через локальную модель Ollama (ключей и интернета не требует).
- * Каждый скриншот и каждый фрагмент текста обрабатывается отдельным запросом —
+ * Каждый скриншот и каждый фрагмент текста (страницы или документа) обрабатывается отдельным запросом —
  * так надёжнее для небольшой модели, а источник каждого пункта известен точно.
  */
-export function createOllamaRecognizer({ baseUrl, model, numCtx = 16384, fetchImpl = fetch }) {
+export function createOllamaRecognizer({ baseUrl, model, numCtx = 16384, maxChunks = MAX_CHUNKS, fetchImpl = fetch }) {
   const explainNetwork = (err) => {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
       return new RecognitionError('Модель отвечает слишком долго (больше 15 минут). Попробуйте меньше скриншотов за раз или модель полегче.');
@@ -86,7 +86,7 @@ export function createOllamaRecognizer({ baseUrl, model, numCtx = 16384, fetchIm
     raw.checklist = (Array.isArray(raw.checklist) ? raw.checklist : []).map((it) => ({
       ...it,
       source,
-      screenshot_number: source === 'screenshot' ? ordinal : null,
+      ordinal: source === 'link' ? null : ordinal,
     }));
     return normalizeExtraction(raw);
   }
@@ -108,24 +108,18 @@ export function createOllamaRecognizer({ baseUrl, model, numCtx = 16384, fetchIm
     return { ok: true, message: '' };
   }
 
-  async function recognize({ url, page, images, today }) {
-    void url;
-    void today;
+  async function recognize({ page, images = [], documents = [] }) {
     const parts = [];
     const warnings = [];
     let failed = 0;
 
-    if (page?.pdf && !images.length) {
-      throw new RecognitionError('Ссылка ведёт на PDF-файл, а локальное распознавание читает только страницы и скриншоты. Загрузите скриншоты страниц PDF.');
-    }
-    if (page?.pdf) warnings.push('PDF по ссылке не прочитан (локальное распознавание его не поддерживает) — использованы скриншоты.');
-
-    if (page?.text) {
-      const { chunks, truncated } = splitText(page.text);
-      if (truncated) warnings.push('Страница очень длинная — прочитано только начало.');
+    /** Текстовый источник (страница по ссылке или документ) → фрагменты → по запросу на фрагмент. */
+    async function readText({ text, label, source, ordinal }) {
+      const { chunks, truncated } = splitText(text, CHUNK_CHARS, maxChunks);
+      if (truncated) warnings.push(`${label}: очень длинный текст — прочитано только начало (${chunks.length} фрагментов).`);
       for (let i = 0; i < chunks.length; i += 1) {
-        const prompt = `Фрагмент ${i + 1} из ${chunks.length} текста страницы закупки${page.title ? ` (заголовок: ${page.title})` : ''}:\n<text>\n${chunks[i]}\n</text>\nЗаполни JSON.`;
-        const part = await extractOne(prompt, null, 'link', null);
+        const prompt = `Фрагмент ${i + 1} из ${chunks.length}. Источник: ${label}.\n<text>\n${chunks[i]}\n</text>\nЗаполни JSON.`;
+        const part = await extractOne(prompt, null, source, ordinal);
         if (part) {
           part.items = checkExcerptsAgainstText(part.items, chunks[i]);
           parts.push(part);
@@ -133,6 +127,12 @@ export function createOllamaRecognizer({ baseUrl, model, numCtx = 16384, fetchIm
       }
     }
 
+    if (page?.text) {
+      await readText({ text: page.text, label: `страница по ссылке${page.title ? ` «${page.title}»` : ''}`, source: 'link', ordinal: null });
+    }
+    for (const doc of documents) {
+      await readText({ text: doc.text, label: `документ «${doc.name}»`, source: 'document', ordinal: doc.ordinal });
+    }
     for (const img of images) {
       const prompt = `Скриншот ${img.ordinal} из ${images.length}. Заполни JSON по тексту на изображении.`;
       const part = await extractOne(prompt, [img.buffer.toString('base64')], 'screenshot', img.ordinal);

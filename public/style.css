@@ -178,6 +178,13 @@ input[type='file'] { display: none; }
   border: 0; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 18px; line-height: 1; cursor: pointer;
 }
 
+.doclist { display: flex; flex-direction: column; gap: 8px; width: 100%; text-align: left; }
+.docrow {
+  display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+}
+.docrow .docname { flex: 1 1 200px; font-weight: 600; }
+
 /* ---------- чек-лист ---------- */
 .items { display: flex; flex-direction: column; gap: 10px; }
 .item { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 12px; display: flex; flex-direction: column; gap: 10px; }

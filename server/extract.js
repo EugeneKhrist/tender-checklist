@@ -58,7 +58,7 @@ export const EXTRACTION_SCHEMA = {
   },
 };
 
-export const SYSTEM_PROMPT = `Ты помощник менеджера по поставкам оборудования. Тебе дают материал по ОДНОЙ закупке (тендер или запрос ценовых предложений, ЗЦП): скриншот страницы или фрагмент текста страницы. Извлеки данные и верни ТОЛЬКО JSON по заданной схеме.
+export const SYSTEM_PROMPT = `Ты помощник менеджера по поставкам оборудования. Тебе дают материал по ОДНОЙ закупке (тендер или запрос ценовых предложений, ЗЦП): скриншот страницы, фрагмент текста страницы или фрагмент документа (PDF, Word, Excel; таблицы записаны строками через « | »). Извлеки данные и верни ТОЛЬКО JSON по заданной схеме.
 
 Правила
 - Используй только то, что реально написано в материале. Ничего не выдумывай. Нет данных — пустая строка "".
@@ -170,12 +170,13 @@ export function normalizeExtraction(raw) {
     const key = normalizeTitle(title);
     if (seen.has(key)) continue;
     seen.add(key);
-    const num = Number.isInteger(it.screenshot_number) ? it.screenshot_number : null;
+    const source = it.source === 'screenshot' || it.source === 'document' ? it.source : 'link';
+    const num = Number.isInteger(it.ordinal) ? it.ordinal : Number.isInteger(it.screenshot_number) ? it.screenshot_number : null;
     items.push({
       title,
       required: ['yes', 'no', 'unclear'].includes(it.required) ? it.required : 'unclear',
-      source: it.source === 'screenshot' ? 'screenshot' : 'link',
-      screenshot_number: it.source === 'screenshot' ? num : null,
+      source, // 'link' | 'screenshot' | 'document'
+      ordinal: source === 'link' ? null : num, // номер скриншота или документа
       excerpt: clean(it.excerpt, 600) || '',
     });
   }
@@ -245,13 +246,14 @@ export function mergeExtractions(parts) {
 }
 
 /**
- * Защита от «выдуманных» пунктов: цитата из текста страницы должна в этом тексте находиться.
- * Если не находится (или цитаты нет) — обязательность становится «Требует проверки».
+ * Защита от «выдуманных» пунктов: цитата из текстового источника (страница, документ)
+ * должна в этом тексте находиться. Если не находится (или цитаты нет) —
+ * обязательность становится «Требует проверки».
  */
 export function checkExcerptsAgainstText(items, pageText) {
   const haystack = normalizeTitle(pageText);
   return items.map((it) => {
-    if (it.source !== 'link') return it;
+    if (it.source === 'screenshot') return it;
     const needle = normalizeTitle(it.excerpt || '');
     const found = needle.length >= 8 && (haystack.includes(needle) || haystack.includes(needle.slice(0, 40)));
     return found ? it : { ...it, required: 'unclear' };

@@ -14,8 +14,19 @@ const config = loadConfig({ DATA_DIR: dataDir, PORT: process.env.PORT || '3100',
 const db = openDb(path.join(dataDir, 'demo.db'));
 
 const recognizer = Object.assign(
-  async ({ page, images }) => {
+  async ({ page, images, documents = [] }) => {
     await new Promise((r) => setTimeout(r, 600));
+    if (documents.length) {
+      return normalizeExtraction({
+        company: 'ООО «Компания В»', title: 'Поставка датчиков давления', type: 'ЗЦП', number: 'ЗЦП-2026-9',
+        deadline_raw: '05.03.2027 12:00 (МСК)', deadline_date: '2027-03-05', deadline_time: '12:00', deadline_timezone: 'МСК',
+        requirements_visible: true,
+        checklist: [
+          { title: 'Приложить ценовое предложение', required: 'yes', source: 'document', ordinal: 1, excerpt: 'Price offer and equipment passport must be attached' },
+          { title: 'Приложить паспорт оборудования', required: 'yes', source: 'document', ordinal: documents.length, excerpt: 'equipment passport' },
+        ],
+      });
+    }
     if (page?.text) {
       return normalizeExtraction({
         company: 'ООО «Компания А»', title: 'Поставка датчиков вибрации', type: 'Тендер', number: '0123-45',

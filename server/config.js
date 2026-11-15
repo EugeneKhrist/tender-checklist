@@ -26,6 +26,8 @@ export function loadConfig(env = process.env) {
     ollamaUrl: (env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, ''),
     ollamaModel: env.OLLAMA_MODEL || 'qwen2.5vl:7b',
     ollamaNumCtx: Number(env.OLLAMA_NUM_CTX) || 16384,
+    // Сколько фрагментов (по ~6000 знаков) читать из одного длинного документа или страницы.
+    ollamaMaxChunks: Number(env.OLLAMA_MAX_CHUNKS) || 10,
     // Только для тестов: разрешает загрузку страниц с локальных адресов.
     allowPrivateFetch: env.ALLOW_PRIVATE_FETCH === '1',
   };

@@ -50,7 +50,7 @@ test('normalizeExtraction: неполный срок и пустые поля п
   assert.equal(ex.review.title, undefined);
   assert.equal(ex.items.length, 1, 'дубликаты по названию схлопываются');
   assert.equal(ex.items[0].required, 'unclear');
-  assert.equal(ex.items[0].screenshot_number, null);
+  assert.equal(ex.items[0].ordinal, null);
 });
 
 test('isPrivateIp / extractText', () => {

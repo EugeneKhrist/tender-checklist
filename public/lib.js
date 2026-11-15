@@ -93,6 +93,27 @@ export function isExpired(t) {
   return t.deadline_date < today;
 }
 
+export const FILE_ACCEPT = 'image/*,.pdf,.doc,.docx,.xlsx';
+const DOC_EXT_RE = /\.(pdf|docx?|xlsx)$/i;
+const MAX_DOC_BYTES = 20 * 1024 * 1024;
+export const isImageFile = (f) => f.type.startsWith('image/');
+export const isDocFile = (f) => DOC_EXT_RE.test(f.name);
+
+export function fmtSize(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+  return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+}
+
+/** Скриншот — уменьшаем перед отправкой; документ PDF / Word / Excel — как есть (с проверкой размера). */
+export async function prepareFile(file) {
+  if (isImageFile(file)) return prepareImage(file);
+  if (isDocFile(file)) {
+    if (file.size > MAX_DOC_BYTES) throw new Error(`«${file.name}» больше 20 МБ`);
+    return file;
+  }
+  throw new Error(`«${file.name}»: подходят изображения, PDF, Word (.docx, .doc) и Excel (.xlsx)`);
+}
+
 const MAX_SIDE = 2200;
 const MAX_BYTES = 5 * 1024 * 1024;
 

@@ -1,4 +1,4 @@
-import { h, api, toast, safeUrl, fmtDeadline, isExpired, prepareImage, fill } from './lib.js';
+import { h, api, toast, safeUrl, fmtDeadline, isExpired, prepareFile, isImageFile, fmtSize, fill, FILE_ACCEPT } from './lib.js';
 
 const state = {
   config: { recognition: false, recognition_note: '', model: '' },
@@ -169,35 +169,50 @@ async function renderNew(main) {
   const files = [];
   const url = h('input', { type: 'text', inputmode: 'url', autocomplete: 'off', placeholder: 'https://…', id: 'new-url' });
   const thumbs = h('div', { class: 'thumbs' });
-  const picker = h('input', { type: 'file', accept: 'image/*', multiple: true, id: 'new-files' });
+  const docList = h('div', { class: 'doclist' });
+  const picker = h('input', { type: 'file', accept: FILE_ACCEPT, multiple: true, id: 'new-files' });
   const error = h('div', { class: 'banner banner-error', hidden: true });
   const go = h('button', { class: 'btn btn-primary', type: 'button' }, 'Распознать');
   const manual = h('button', { class: 'btn btn-link', type: 'button' }, 'Заполнить вручную, без распознавания');
   const drop = h('div', { class: 'dropzone' });
 
   const repaint = () => {
+    const images = files.filter(isImageFile);
+    const docs = files.filter((f) => !isImageFile(f));
     thumbs.replaceChildren(
-      ...files.map((f, i) => {
+      ...images.map((f, i) => {
         const src = URL.createObjectURL(f);
         return h(
           'div',
           { class: 'thumb' },
           h('img', { src, alt: `Скриншот ${i + 1}`, onload: () => URL.revokeObjectURL(src) }),
           h('span', {}, `Скриншот ${i + 1}`),
-          h('button', { class: 'rm', type: 'button', 'aria-label': `Убрать скриншот ${i + 1}`, onclick: () => { files.splice(i, 1); repaint(); } }, '×'),
+          h('button', { class: 'rm', type: 'button', 'aria-label': `Убрать скриншот ${i + 1}`, onclick: () => { files.splice(files.indexOf(f), 1); repaint(); } }, '×'),
         );
       }),
     );
-    thumbs.hidden = !files.length;
+    thumbs.hidden = !images.length;
+    docList.replaceChildren(
+      ...docs.map((f, i) =>
+        h(
+          'div',
+          { class: 'docrow' },
+          h('span', { class: 'docname' }, `Документ ${i + 1}: ${f.name}`),
+          h('span', { class: 'muted small' }, fmtSize(f.size)),
+          h('button', { class: 'btn btn-small', type: 'button', 'aria-label': `Убрать ${f.name}`, onclick: () => { files.splice(files.indexOf(f), 1); repaint(); } }, 'Убрать'),
+        ),
+      ),
+    );
+    docList.hidden = !docs.length;
   };
   const addFiles = async (list) => {
     for (const file of list) {
       if (files.length >= 10) {
-        toast('За один раз можно добавить не больше 10 скриншотов', 'error');
+        toast('За один раз можно добавить не больше 10 файлов', 'error');
         break;
       }
       try {
-        files.push(await prepareImage(file));
+        files.push(await prepareFile(file));
       } catch (err) {
         toast(err.message, 'error');
       }
@@ -219,16 +234,17 @@ async function renderNew(main) {
   document.addEventListener('paste', onPaste);
 
   drop.append(
-    h('p', { class: 'muted' }, 'Скриншоты карточки закупки и страниц с требованиями. Можно несколько; на компьютере — перетащить или вставить из буфера (Ctrl+V).'),
-    h('label', { class: 'btn', for: 'new-files' }, 'Выбрать скриншоты'),
+    h('p', { class: 'muted' }, 'Скриншоты страниц закупки и документы: PDF, Word (.docx, .doc), Excel (.xlsx). Можно несколько. На компьютере файлы можно перетащить, скриншот — вставить из буфера (Ctrl+V).'),
+    h('label', { class: 'btn', for: 'new-files' }, 'Выбрать файлы'),
     picker,
     thumbs,
+    docList,
   );
 
   const submit = async (mode) => {
     error.hidden = true;
     if (mode !== 'manual' && !url.value.trim() && !files.length) {
-      error.textContent = 'Добавьте ссылку на закупку или хотя бы один скриншот.';
+      error.textContent = 'Добавьте ссылку на закупку, скриншоты или документы.';
       error.hidden = false;
       return;
     }
@@ -270,7 +286,7 @@ async function renderNew(main) {
       'div',
       { class: 'card stack' },
       h('div', {}, h('label', { for: 'new-url' }, 'Ссылка на закупку'), url, h('p', { class: 'hint' }, 'Приложение прочитает страницу, если она открыта без входа в аккаунт.')),
-      h('div', {}, h('label', {}, 'Скриншоты документации'), drop),
+      h('div', {}, h('label', {}, 'Скриншоты и документы'), drop),
       error,
       go,
       manual,
@@ -300,7 +316,7 @@ async function renderTender(main, id) {
           'div',
           { class: 'banner banner-warn' },
           h('strong', {}, 'Ссылка сохранена, но прочитать страницу не удалось'),
-          h('span', {}, `${t.url_note} Загрузите скриншоты страницы закупки и требований ниже — распознавание продолжится по ним.`),
+          h('span', {}, `${t.url_note} Загрузите скриншоты или документы (PDF, Word, Excel) со страницы закупки и требований ниже — распознавание продолжится по ним.`),
         ),
       );
     }
@@ -310,7 +326,7 @@ async function renderTender(main, id) {
           'div',
           { class: 'banner banner-warn' },
           h('strong', {}, 'Нужны страницы с требованиями'),
-          h('span', {}, 'В материалах видна только карточка закупки. Добавьте скриншоты страниц с требованиями к заявке (документы, условия) — и нажмите «Распознать снова».'),
+          h('span', {}, 'В материалах видна только карточка закупки. Добавьте скриншоты страниц или документы (PDF, Word, Excel) с требованиями к заявке — и нажмите «Распознать снова».'),
           h('button', { class: 'btn btn-small', type: 'button', onclick: async () => { t = await api('PATCH', `/api/tenders/${t.id}`, { needs_requirements: false }); paint(); } }, 'Скрыть напоминание'),
         ),
       );
@@ -430,7 +446,7 @@ async function renderTender(main, id) {
     });
     const delBtn = h('button', { class: 'btn btn-danger', type: 'button' }, 'Удалить закупку');
     delBtn.addEventListener('click', async () => {
-      if (!confirm('Удалить закупку вместе с чек-листом и скриншотами? Это нельзя отменить.')) return;
+      if (!confirm('Удалить закупку вместе с чек-листом и загруженными файлами? Это нельзя отменить.')) return;
       try {
         await api('DELETE', `/api/tenders/${t.id}`);
         toast('Закупка удалена');
@@ -466,20 +482,22 @@ async function renderTender(main, id) {
 
   /* ----- скриншоты и повторное распознавание ----- */
   function screenshotsSection() {
+    const images = t.files.filter((f) => f.kind !== 'document');
+    const docs = t.files.filter((f) => f.kind === 'document');
     const newFiles = [];
-    const picker = h('input', { type: 'file', accept: 'image/*', multiple: true, id: 'more-files' });
+    const picker = h('input', { type: 'file', accept: FILE_ACCEPT, multiple: true, id: 'more-files' });
     const preview = h('div', { class: 'small muted' });
     const rerun = h('button', { class: 'btn btn-primary', type: 'button' }, 'Распознать снова');
     picker.addEventListener('change', async () => {
       for (const file of [...picker.files]) {
         try {
-          newFiles.push(await prepareImage(file));
+          newFiles.push(await prepareFile(file));
         } catch (err) {
           toast(err.message, 'error');
         }
       }
       picker.value = '';
-      preview.textContent = newFiles.length ? `Выбрано новых скриншотов: ${newFiles.length}` : '';
+      preview.textContent = newFiles.length ? `Выбрано новых файлов: ${newFiles.map((f) => f.name).join(', ')}` : '';
     });
     rerun.addEventListener('click', async () => {
       rerun.disabled = true;
@@ -503,17 +521,33 @@ async function renderTender(main, id) {
       'section',
       { class: 'card stack', id: 'screens' },
       h('h2', {}, 'Материалы'),
-      t.files.length
+      t.files.length ? null : h('p', { class: 'muted' }, 'Скриншотов и документов пока нет.'),
+      images.length
         ? h(
             'div',
             { class: 'thumbs' },
-            t.files.map((f) =>
+            images.map((f) =>
               h('a', { class: 'thumb', href: `/api/files/${f.id}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/api/files/${f.id}`, alt: `Скриншот ${f.ordinal}`, loading: 'lazy' }), h('span', {}, `Скриншот ${f.ordinal}`)),
             ),
           )
-        : h('p', { class: 'muted' }, 'Скриншотов пока нет.'),
-      h('p', { class: 'hint' }, 'Можно добавить ещё скриншоты — например, страницы с требованиями. Уже подтверждённые вами поля не изменятся, в чек-лист добавятся только новые пункты.'),
-      h('div', { class: 'row' }, h('label', { class: 'btn', for: 'more-files' }, 'Добавить скриншоты'), picker, rerun),
+        : null,
+      docs.length
+        ? h(
+            'div',
+            { class: 'doclist' },
+            docs.map((f) =>
+              h(
+                'div',
+                { class: 'docrow' },
+                h('span', { class: 'docname' }, `Документ ${f.ordinal}: ${f.filename}`),
+                h('span', { class: 'muted small' }, fmtSize(f.size)),
+                h('a', { class: 'btn btn-small', href: `/api/files/${f.id}` }, 'Скачать'),
+              ),
+            ),
+          )
+        : null,
+      h('p', { class: 'hint' }, 'Можно добавить ещё скриншоты или документы (PDF, Word, Excel) — например, с требованиями к заявке. Подтверждённые вами поля не изменятся, в чек-лист добавятся только новые пункты.'),
+      h('div', { class: 'row' }, h('label', { class: 'btn', for: 'more-files' }, 'Добавить файлы'), picker, rerun),
       preview,
     );
   }
@@ -558,12 +592,16 @@ async function renderTender(main, id) {
     };
 
     function itemEl(item) {
+      const fileLink = (text, target) =>
+        item.source_file_id ? h('a', { href: `/api/files/${item.source_file_id}`, ...(target ? { target: '_blank', rel: 'noopener' } : {}) }, text) : text;
       const sourceLine =
         item.source_type === 'screenshot'
-          ? h('div', { class: 'source' }, 'Источник: ', item.source_file_id ? h('a', { href: `/api/files/${item.source_file_id}`, target: '_blank', rel: 'noopener' }, `скриншот ${item.source_ordinal ?? ''}`.trim()) : 'скриншот')
-          : item.source_type === 'link'
-            ? h('div', { class: 'source' }, 'Источник: страница по ссылке')
-            : h('div', { class: 'source' }, 'Источник: добавлено вручную');
+          ? h('div', { class: 'source' }, 'Источник: ', fileLink(`скриншот ${item.source_ordinal ?? ''}`.trim(), true))
+          : item.source_type === 'document'
+            ? h('div', { class: 'source' }, 'Источник: документ ', fileLink(`«${item.source_name || item.source_ordinal || ''}»`, false))
+            : item.source_type === 'link'
+              ? h('div', { class: 'source' }, 'Источник: страница по ссылке')
+              : h('div', { class: 'source' }, 'Источник: добавлено вручную');
 
       const seg = h(
         'div',
